@@ -1,128 +1,95 @@
+from astropy.io import fits
 import matplotlib.pyplot as plt
 import numpy as np
-from astropy.io import fits
+from astropy.visualization import LogStretch
 
-def stack(samp_stack,figname):
-    flux_convert = np.median(cat_3dhst_clean['f_F140W']/cat_3dhst_clean['f_F160W'])
+def normalize_stack(image):
+        m, M = np.min(image), np.max(image)
+        m, M = np.percentile(image,[1,99])
+        M *= 4
+        m = -0.1*M
+        return (image-m) / (M-m)
     
-    cont,line,weights_line,weights,psfs,psfs_weight,masks_line,masks = [],[],[],[],[],[],[],[]
-    print(len(samp_stack))
+        
+def select_stack_gals(row,final):
+    if row['mass'] == 10.5:
+        m = final['mass'] < 11  #select mass range
     
-    # convert f160w global fluxes to f140w. Use this to find median value of stack.
-    f160w = samp_stack['hmag_filt'] == 'F160W'
-    f140w = samp_stack['hmag_filt'] == 'F140W'
+    elif row['mass'] == 11:
+        m = final['mass'] > 11  #select mass range
     
-    apcorr = samp_stack['flux_auto'][f160w]/samp_stack['flux_aper_1'][f160w]
-    mag160= np.array(23.9-2.5*np.log10(samp_stack[f160w]['flux_aper_1']*flux_convert*apcorr))
-    mag140 = np.array(samp_stack['hmag_aliza'][f140w])
+    z = (final['redshift']> row['zmin']) & (final['redshift']<= row['zmax']) # select z range
+    cat = final['cat'] == row['cat'] # select catalog
+    c = m&z&cat
     
-    mag = np.hstack([mag160,mag140])
-    m0 = np.median(mag) #median magnitude of stack *in F140W*
-    print(m0)
+    return c
     
-    xmin = np.min(samp_stack['flux_Ha'])
-    xmax = np.max(samp_stack['flux_Ha'])
-    print(np.median(samp_stack['flux_Ha']))
+def convert_mags(table,flux_convert):
+    apcorr = table['flux_auto']/table['flux_aper_1']
+    filt = table['hmag_filt']
 
-    for i,tab in enumerate(samp_stack):
-        #print(tab['hmag_filt'],tab['root'],tab['id'])
-        full = fits.open('../final_data/full_new/{0}_{1:05d}.full.fits'.format(tab['root'],tab['id']))
-        filt = tab['hmag_filt']
-        
-        if filt == 'F160W':
-            apcorr = tab['flux_auto']/tab['flux_aper_1']
-            m_i = 23.9-2.5*np.log10(tab['f160w_flux_aper_1']*flux_convert*apcorr) # new mag is flux*flux_convert
-            norm = 10**(0.4*(tab['hmag_aliza']-m0))   # use this to scale up faint galaxies
-            
-            ## Get psf
-            psf_fit = fits.open('../complete/psfs/{0}-f{1}w_psf.fits'.format(tab['root'],filt[1:4]))
-            try:
-                psf = psf_fit['PSF','DRIZ1'].data * flux_convert #that's the ratio F140w/F160w
-            except:
-                psf = psf_fit['PSF','DRIZ'].data * flux_convert
-            
-            
-            data = full['DSCI',filt].data * flux_convert #that's the ratio F140w/F160w
-            dwht = full['DWHT',filt].data / flux_convert**2
-            dwht_new = dwht/np.sum(dwht)
-            
-        elif filt =='F140W':
-            norm = 10**(0.4*(tab['hmag_aliza']-m0))   # use this to scale up faint galaxies
-            ## Get psf
-            psf_fit = fits.open('../complete/psfs/{0}-f{1}w_psf.fits'.format(tab['root'],filt[1:4]))
-            try:
-                psf = psf_fit['PSF','DRIZ1'].data
-            except:
-                psf = psf_fit['PSF','DRIZ'].data
-                
-            data = full['DSCI',filt].data
-            dwht = full['DWHT',filt].data
-            dwht_new = dwht/np.sum(dwht)
-        
-        data_line = full['LINE','Ha'].data
-        dwht_line = full['LINEWHT','Ha'].data
-        dwht_line_new = dwht_line/np.sum(dwht_line)
-        
-        segmap = full['SEG'].data
+    # Column 'stack_mag' has the converted magnitudes
+    table['stack_mag'] = table['hmag_aliza']
+    table['stack_mag'][filt =='F160W'] = 23.9-2.5*np.log10(table[filt=='F160W']['flux_aper_1']*flux_convert*apcorr[filt=='F160W'])
 
-        mask = ((segmap == tab['id']) | (segmap == 0)) & (dwht!=0)
-        mask_line = (dwht_line != 0)
-        
-        weight = mask*dwht_new/(norm**2)
-        weights.append(weight)
-        weight_line = mask_line*dwht_line_new/(norm**2)
-        weights_line.append(weight_line)
-        print(tab['root'],tab['id'],tab['hmag_aliza'],norm)#,norm,tab['flux_Ha'])
-        #plt.imshow(weight_line)
-        #plt.show()
-                
-#         if ((tab['root'] == 'j100025+021706') & (tab['id'] == 1674)):
-#             print(norm,tab['hmag_aliza'],m0)
-#             plt.imshow(log_stretch(normalize_stack(data)),origin='lower')
-#             plt.show()
-#             plt.imshow(log_stretch(normalize_stack(data_line)),origin='lower')
-#             plt.show()
-#             plt.imshow(weight,origin='lower')
-#             plt.show()
-        
-        cont.append(data*norm*weight)  # This is top of sum - im*mask/(sig^2*norm)
-        line.append(data_line*norm*weight_line)
-        
-        psfs.append(psf)
-        psfs_weight.append(1.)
+    # Column 'flux_convert' is 1 for F140W and != 1 for F160W
+    table['flux_convert'] = np.ones(len(table))
+    table['flux_convert'][filt=='F160W'] = flux_convert
     
-    cont_total_weight = np.sum(weights,axis=0)
-    print('cont_weight')
-    plt.imshow(cont_total_weight,origin='lower')
-    plt.show()
-    line_total_weight = np.sum(weights_line,axis=0)
-    print('line_weight')
-    plt.imshow(line_total_weight,origin='lower')
-    plt.show()
-    avg_cont = np.sum(cont,axis=0)/cont_total_weight
-    avg_cont[~np.isfinite(avg_cont)] = 0
-    avg_line = np.sum(line,axis=0)/line_total_weight
-    avg_line[~np.isfinite(avg_line)] = 0
+    m0 = stack_median_mag(table)
     
-    psf_stack = sum(psfs)/len(psfs_weight)
-    
-    hdu_cont = fits.PrimaryHDU(avg_cont)
-    hdu_line = fits.ImageHDU(avg_line)
-    hdu_cont_wht = fits.ImageHDU(cont_total_weight) #1/sqrt(wht)
-    hdu_line_wht = fits.ImageHDU(line_total_weight)
-    hdu_psf = fits.ImageHDU(psf_stack)
-    hdu_total = fits.HDUList([hdu_cont,hdu_cont_wht,hdu_line,hdu_line_wht,hdu_psf])
-#     0 - continuum
-#     1 - continuum weight
-#     2 - line
-#     3 - line weight
-#     4 - psf
+    return table,m0
 
-    hdu_total.writeto('../final_data/stack/fits_aas/stack_{0}.fits'.format(figname),overwrite=True)
-#    hdu_total.writeto('../final_data/stack/fits/{0}.fits'.format(figname),overwrite=True)
-    print('cont')
-    plt.imshow(log_stretch(normalize_stack(avg_cont)),origin='lower')
-    plt.show()
-    print('line')
-    plt.imshow(log_stretch(normalize_stack(avg_line)),origin='lower')  
-    plt.show()
+def stack_median_mag(table):
+    
+    m0 = np.median(table['stack_mag']) # This column is defined in 'convert_mags'
+    
+    return m0
+
+def Norm(row,m0):
+    
+    norm = 10**(0.4*(row['stack_mag']-m0))
+        
+    return norm
+
+def get_data(row,flux_convert):
+    full = fits.open('../final_data/full_new/{0}_{1:05d}.full.fits'.format(row['root'],row['id']))
+    seg = full['SEG'].data
+    data = full['DSCI',row['hmag_filt']].data * flux_convert
+    dwht = full['DWHT',row['hmag_filt']].data / flux_convert**2
+    dwht_new = dwht/np.sum(dwht)
+    
+    data_line = full['LINE','Ha'].data
+    dwht_line = full['LINEWHT','Ha'].data
+    dwht_line_new = dwht_line/np.sum(dwht_line)
+    
+    psf_fit = fits.open('../complete/psfs/{0}-f{1}w_psf.fits'.format(row['root'],row['hmag_filt'][1:4]))
+    try:
+        psf = psf_fit['PSF','DRIZ1'].data * flux_convert #that's the ratio F140w/F160w
+    except:
+        psf = psf_fit['PSF','DRIZ'].data * flux_convert
+    
+    return seg,data,dwht,dwht_new,data_line,dwht_line,dwht_line_new,psf
+
+def show_stacks(row,stack_n,im1,im2,imtype,save):
+    log_stretch = LogStretch(a=1)
+    
+    fig = plt.figure(figsize=(8,4))
+    fig.suptitle('{0}: {1:.1f} < z < {2:.1f}, N = {3}, M = {4}'.format(row['cat'],row['zmin'],row['zmax'],stack_n,row['mass']),fontsize=15)
+    ax = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
+
+    ax.imshow(log_stretch(normalize_stack(im1)),origin='lower', cmap='gray')
+    ax.text(5,140,'F140W',fontsize = 22,color='white')
+    
+    ax2.imshow(log_stretch(normalize_stack(im2)),origin='lower', cmap='gray',)
+    ax2.text(5,140,r'H$\alpha$',fontsize = 22,color='white')
+    
+    if save == True:
+        fig.savefig('../final_data/stack/stacks/z{0:.1f}-{1:.1f}_M{2}_{3}_{4}.png'.format(row['zmin'],row['zmax'],row['mass'],row['cat'],imtype),dpi = 300)
+
+
+    
+    
+ 
+    

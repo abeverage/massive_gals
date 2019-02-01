@@ -5,8 +5,28 @@ import time
 import statmorph
 from collections import OrderedDict
 import math
+from astropy.visualization import LogStretch
+import scipy.ndimage as nd
 
-def run_everything(file,seg_l,seg_c,tab):
+def normalize_stack(image):
+        m, M = np.min(image), np.max(image)
+        m, M = np.percentile(image,[1,99])
+        M *= 4
+        m = -0.1*M
+        return (image-m) / (M-m)
+    
+def normalize(image,ms = None):
+    if ms is None:
+        m, M = np.min(image), np.max(image)
+        m, M = np.percentile(image,[1,99])
+        M *= 4
+        m = -0.1*M
+        return (image-m) / (M-m), m, M
+    else:
+        m, M = ms
+        return (image-m) / (M-m)
+
+def run_statmorph(file,seg_l,seg_c,tab):
     
     full = fits.open(file)
     # 0 - continuum
